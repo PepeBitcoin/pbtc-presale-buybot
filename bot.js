@@ -1,4 +1,3 @@
-require("dotenv").config();
 const { ethers } = require("ethers");
 const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
