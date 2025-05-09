@@ -40,10 +40,10 @@ function formatAmount(amount, decimals = 18) {
 
 // Helper: get tier
 function getTier(usdt) {
-  if (usdt < 50) return { emoji: "🐟", label: "Shrimp", image: "shrimp.jpg" };
-  if (usdt < 200) return { emoji: "🐠", label: "Fish", image: "fish.jpg" };
-  if (usdt < 500) return { emoji: "🐬", label: "Dolphin", image: "dolphin.jpg" };
-  return { emoji: "🐋", label: "Whale", image: "whale.jpg" };
+  if (usdt < 50) return { emoji: "🐟", label: "Shrimp", image: "buy.jpg" };
+  if (usdt < 200) return { emoji: "🐠", label: "Fish", image: "buy.jpg" };
+  if (usdt < 500) return { emoji: "🐬", label: "Dolphin", image: "buy.jpg" };
+  return { emoji: "🐋", label: "Whale", image: "buy.jpg" };
 }
 
 // Event listener
