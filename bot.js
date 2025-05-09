@@ -1,4 +1,4 @@
-const { ethers } = require("ethers");
+const { WebSocketProvider, Contract, formatUnits } = require("ethers");
 const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
 const path = require("path");
@@ -19,12 +19,9 @@ const presaleAbi = [
 ];
 
 // Ethers provider
-const provider = new ethers.JsonRpcProvider(RPC_URL);
-const presaleContract = new ethers.Contract(
-  PRESALE_CONTRACT_ADDRESS,
-  presaleAbi,
-  provider
-);
+const provider = new ethers.WebSocketProvider(RPC_URL);
+const presaleContract = new Contract(PRESALE_CONTRACT_ADDRESS, presaleAbi, provider);
+
 
 // Helper: format value
 function formatAmount(amount, decimals = 18) {
