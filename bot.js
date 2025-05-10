@@ -5,7 +5,7 @@ const path = require("path");
 
 const {
   TELEGRAM_BOT_TOKEN,
-  TELEGRAM_CHAT_ID,
+  TELEGRAM_CHAT_IDS,
   RPC_URL,
   PRESALE_CONTRACT_ADDRESS,
 } = process.env;
@@ -56,10 +56,14 @@ presaleContract.on("Purchased", async (user, usdtAmount, pbtcAmount, event) => {
 
     const imagePath = path.join(__dirname, "images", tier.image);
 
-    await bot.sendPhoto(TELEGRAM_CHAT_ID, imagePath, {
-      caption: message,
-      parse_mode: "Markdown",
-    });
+    const CHAT_IDS = process.env.TELEGRAM_CHAT_IDS.split(",");
+
+    for (const chatId of CHAT_IDS) {
+      await bot.sendPhoto(chatId.trim(), imagePath, {
+        caption: message,
+        parse_mode: "Markdown",
+      });
+    }
 
     console.log(`[BuyBot] Posted ${tier.label} buy: $${usdt.toFixed(2)}`);
   } catch (err) {
