@@ -13,25 +13,21 @@ const {
 // Init Telegram bot
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 
-// ABI fragment
+// ABI fragment (minimal for event listening)
 const presaleAbi = [
   "event Purchased(address indexed user, uint256 usdtAmount, uint256 pbtcAmount)",
 ];
 
-// Ethers provider
-const provider = new ethers.WebSocketProvider(RPC_URL);
+// Create provider and contract
+const provider = new WebSocketProvider(RPC_URL);
 const presaleContract = new Contract(PRESALE_CONTRACT_ADDRESS, presaleAbi, provider);
-
 
 // Helper: format value
 function formatAmount(amount, decimals = 18) {
-  return parseFloat(ethers.formatUnits(amount, decimals)).toLocaleString(
-    undefined,
-    {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 6,
-    }
-  );
+  return parseFloat(formatUnits(amount, decimals)).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  });
 }
 
 // Helper: get tier
@@ -45,13 +41,14 @@ function getTier(usdt) {
 // Event listener
 presaleContract.on("Purchased", async (user, usdtAmount, pbtcAmount, event) => {
   try {
-    const usdt = parseFloat(ethers.formatUnits(usdtAmount, 6));
+    const usdt = parseFloat(formatUnits(usdtAmount, 6));
     const pbtc = formatAmount(pbtcAmount, 18);
     const shortAddr = `${user.slice(0, 6)}...${user.slice(-4)}`;
     const txLink = `https://basescan.org/tx/${event.transactionHash}`;
 
     const tier = getTier(usdt);
-    const message = `${tier.emoji} *New ${tier.label} Buy!*\n\n` +
+    const message =
+      `${tier.emoji} *New ${tier.label} Buy!*\n\n` +
       `👤 [${shortAddr}](https://basescan.org/address/${user})\n` +
       `💵 *$${usdt.toFixed(2)}* USDT\n` +
       `🪙 *${pbtc}* PBTC\n\n` +
