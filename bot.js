@@ -38,34 +38,42 @@ function getTier(usdt) {
   return { emoji: "🐋", label: "Whale", image: "buy.jpg" };
 }
 
-// Event listener
-presaleContract.on("Purchased", async (user, usdtAmount, pbtcAmount, event) => {
+// Main event listener
+presaleContract.on("Purchased", async (log) => {
   try {
+    const { user, usdtAmount, pbtcAmount } = log.args;
+    const txHash = log.transactionHash;
+
     const usdt = parseFloat(formatUnits(usdtAmount, 6));
     const pbtc = formatAmount(pbtcAmount, 18);
     const shortAddr = `${user.slice(0, 6)}...${user.slice(-4)}`;
-    const txLink = `https://basescan.org/tx/${event.transactionHash}`;
+    const txLink = `https://basescan.org/tx/${txHash}`;
+
+    const totalRaised = parseFloat(formatUnits(await presaleContract.totalRaised(), 6));
+    const hardcap = parseFloat(formatUnits(await presaleContract.hardcap(), 6));
+    const progressBar = generateProgressBar(totalRaised, hardcap);
 
     const tier = getTier(usdt);
     const message =
       `${tier.emoji} *New ${tier.label} Buy!*\n\n` +
       `👤 [${shortAddr}](https://basescan.org/address/${user})\n` +
       `💵 *$${usdt.toFixed(2)}* USDT\n` +
-      `🪙 *${pbtc}* PBTC\n\n` +
+      `💰 *${pbtc}* PBTC\n\n` +
+      `🎯 *${totalRaised.toLocaleString()} / ${hardcap.toLocaleString()}* USDT raised\n` +
+      `${progressBar}\n\n` +
       `🔗 [View on BaseScan](${txLink})`;
 
     const imagePath = path.join(__dirname, "images", tier.image);
+    const chatIds = TELEGRAM_CHAT_IDS.split(",");
 
-    const CHAT_IDS = process.env.TELEGRAM_CHAT_IDS.split(",");
-
-    for (const chatId of CHAT_IDS) {
+    for (const chatId of chatIds) {
       await bot.sendPhoto(chatId.trim(), imagePath, {
         caption: message,
-        parse_mode: "Markdown",
+        parse_mode: "Markdown"
       });
     }
 
-    console.log(`[BuyBot] Posted ${tier.label} buy: $${usdt.toFixed(2)}`);
+    console.log(`[BuyBot] ${tier.label} | $${usdt.toFixed(2)} | ${progressBar}`);
   } catch (err) {
     console.error("Error posting buy:", err.message);
   }
