@@ -49,7 +49,7 @@ function getTier(usdt) {
 // Main event listener
 presaleContract.on("Purchased", async (user, usdtAmount, pbtcAmount, event) => {
   try {
-    const txHash = event.transactionHash;
+    const txHash = event.log.transactionHash;
 
     const usdt = parseFloat(formatUnits(usdtAmount, 6));
     const pbtc = formatAmount(pbtcAmount, 18);
