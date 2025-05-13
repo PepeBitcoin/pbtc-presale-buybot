@@ -39,10 +39,9 @@ function getTier(usdt) {
 }
 
 // Main event listener
-presaleContract.on("Purchased", async (log) => {
+presaleContract.on("Purchased", async (user, usdtAmount, pbtcAmount, event) => {
   try {
-    const { user, usdtAmount, pbtcAmount } = log.args;
-    const txHash = log.transactionHash;
+    const txHash = event.transactionHash;
 
     const usdt = parseFloat(formatUnits(usdtAmount, 6));
     const pbtc = formatAmount(pbtcAmount, 18);
