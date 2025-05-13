@@ -20,15 +20,14 @@ const presaleAbi = require("./abi/PresaleABI.json");
 const provider = new WebSocketProvider(RPC_URL);
 const presaleContract = new Contract(PRESALE_CONTRACT_ADDRESS, presaleAbi, provider);
 
-provider.on("error", (error) => {
-  console.error("❌ Provider error:", error);
-  process.exit(1);
-});
-
-provider.on("close", (code) => {
-  console.error("❌ WebSocket closed with code", code);
-  process.exit(1);
-});
+setInterval(async () => {
+  try {
+    await provider.getBlockNumber();
+  } catch (err) {
+    console.error("❌ Lost WebSocket connection. Exiting to trigger auto-restart.");
+    process.exit(1);
+  }
+}, 30000);
 
 // Progress bar
 function generateProgressBar(current, max, barLength = 10) {
