@@ -93,7 +93,6 @@ presaleContract.on("Purchased", async (user, usdtAmount, pbtcAmount, event) => {
       await bot.sendPhoto(chatId.trim(), imagePath, {
         caption: message,
         parse_mode: "Markdown"
-        await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay between sends
       });
     }
 
