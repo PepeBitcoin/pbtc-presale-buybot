@@ -20,21 +20,15 @@ const presaleAbi = require("./abi/PresaleABI.json");
 const provider = new WebSocketProvider(RPC_URL);
 const presaleContract = new Contract(PRESALE_CONTRACT_ADDRESS, presaleAbi, provider);
 
-provider._websocket.on("close", async () => {
-  console.error("❌ WebSocket closed. Reconnecting...");
-  reconnect();
+provider.on("error", (error) => {
+  console.error("❌ Provider error:", error);
+  process.exit(1);
 });
 
-provider._websocket.on("error", async (err) => {
-  console.error("❌ WebSocket error. Reconnecting...", err);
-  reconnect();
+provider.on("close", (code) => {
+  console.error("❌ WebSocket closed with code", code);
+  process.exit(1);
 });
-
-function reconnect() {
-  setTimeout(() => {
-    process.exit(1); // Let Render auto-restart the bot
-  }, 1000);
-}
 
 // Progress bar
 function generateProgressBar(current, max, barLength = 10) {
