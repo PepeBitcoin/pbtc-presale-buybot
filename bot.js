@@ -13,16 +13,22 @@ const {
 // Init Telegram bot
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 
-// ABI fragment (minimal for event listening)
-const presaleAbi = [
-  "event Purchased(address indexed user, uint256 usdtAmount, uint256 pbtcAmount)",
-  "function totalRaised() view returns (uint256)",
-  "function hardcap() view returns (uint256)"
-];
+// ABI
+const presaleAbi = require("./abi/PresaleABI.json");
 
 // Create provider and contract
 const provider = new WebSocketProvider(RPC_URL);
 const presaleContract = new Contract(PRESALE_CONTRACT_ADDRESS, presaleAbi, provider);
+
+// Progress bar
+function generateProgressBar(current, max, barLength = 10) {
+  const percent = Math.min(current / max, 1);
+  const filledLength = Math.round(barLength * percent);
+  const emptyLength = barLength - filledLength;
+  const bar = "▰".repeat(filledLength) + "▱".repeat(emptyLength);
+  const percentText = `${Math.round(percent * 100)}%`;
+  return `${bar} ${percentText}`;
+}
 
 // Helper: format value
 function formatAmount(amount, decimals = 18) {
