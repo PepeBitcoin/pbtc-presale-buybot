@@ -16,6 +16,8 @@ const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
 // ABI fragment (minimal for event listening)
 const presaleAbi = [
   "event Purchased(address indexed user, uint256 usdtAmount, uint256 pbtcAmount)",
+  "function totalRaised() view returns (uint256)",
+  "function hardcap() view returns (uint256)"
 ];
 
 // Create provider and contract
