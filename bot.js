@@ -89,21 +89,30 @@ async function pollNewBuys() {
       lastBlock = currentBlock - 1;
     }
 
-    const events = await presaleContract.queryFilter("Purchased", lastBlock + 1, currentBlock);
-    lastBlock = currentBlock;
+    const maxRange = 500;
+    const start = lastBlock + 1;
+    const end = currentBlock;
 
-    for (const e of events) {
-      const { user, usdtAmount, pbtcAmount } = e.args;
-      const txHash = e.transactionHash;
-      const usdt = parseFloat(formatUnits(usdtAmount, 6));
-      const pbtc = formatAmount(pbtcAmount, 18);
+    for (let fromBlock = start; fromBlock <= end; fromBlock += maxRange) {
+      const toBlock = Math.min(fromBlock + maxRange - 1, end);
 
-      await broadcastBuy({ user, usdt, pbtc, txHash });
+      const events = await presaleContract.queryFilter("Purchased", fromBlock, toBlock);
+      lastBlock = toBlock;
+
+      for (const e of events) {
+        const { user, usdtAmount, pbtcAmount } = e.args;
+        const txHash = e.transactionHash;
+        const usdt = parseFloat(formatUnits(usdtAmount, 6));
+        const pbtc = formatAmount(pbtcAmount, 18);
+
+        await broadcastBuy({ user, usdt, pbtc, txHash });
+      }
     }
   } catch (err) {
     console.error("Polling error:", err.message);
   }
 }
+
 
 // Start polling
 setInterval(pollNewBuys, 10000);
