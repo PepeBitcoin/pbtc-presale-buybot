@@ -138,7 +138,7 @@ let lastHolderScanBlock = 29988806; // set to PBTC creation block
 
 async function updateKnownHolders() {
   const currentBlock = await provider.getBlockNumber();
-  const batchSize = 1000;
+  const batchSize = 500;
 
   console.log(`[HolderBot] Scanning Transfer logs from ${lastHolderScanBlock + 1} to ${currentBlock}...`);
 
