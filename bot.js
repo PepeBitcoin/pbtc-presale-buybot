@@ -14,7 +14,7 @@ const {
 } = process.env;
 
 // Init Telegram bot
-const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: false });
+const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
 // ABI
 const presaleAbi = require("./abi/PresaleABI.json");
