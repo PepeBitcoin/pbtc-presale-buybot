@@ -8,7 +8,9 @@ const {
   TELEGRAM_CHAT_IDS,
   RPC_URL,
   PRESALE_CONTRACT_ADDRESS,
-  START_BLOCK // optional: set to block to recover from
+  START_BLOCK,
+  PBTC_TOKEN_ADDRESS,
+  STAKING_CONTRACT_ADDRESS
 } = process.env;
 
 // Init Telegram bot
@@ -117,3 +119,74 @@ async function pollNewBuys() {
 // Start polling
 setInterval(pollNewBuys, 10000);
 console.log("✅ PBTC buy bot is polling for purchases...");
+
+
+// Holder tracker setup
+// Load staking + token contracts
+const stakingAbi = require("./abi/StakingContractABI.json");
+const pbtcAbi = [
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+  "function balanceOf(address) view returns (uint256)"
+];
+
+const pbtc = new Contract(PBTC_TOKEN_ADDRESS, pbtcAbi, provider);
+const staking = new Contract(STAKING_CONTRACT_ADDRESS, stakingAbi, provider);
+
+let knownAddresses = new Set();
+
+let lastHolderScanBlock = 29988806; // set to PBTC creation block
+
+async function updateKnownHolders() {
+  const currentBlock = await provider.getBlockNumber();
+  const batchSize = 500;
+
+  console.log(`[HolderBot] Scanning Transfer logs from ${lastHolderScanBlock + 1} to ${currentBlock}...`);
+
+  for (let from = lastHolderScanBlock + 1; from <= currentBlock; from += batchSize) {
+    const to = Math.min(from + batchSize - 1, currentBlock);
+    const logs = await pbtc.queryFilter("Transfer", from, to);
+    for (const log of logs) {
+      knownAddresses.add(log.args.from.toLowerCase());
+      knownAddresses.add(log.args.to.toLowerCase());
+    }
+    console.log(`[HolderBot] Scanned blocks ${from}-${to} | Total known: ${knownAddresses.size}`);
+  }
+
+  lastHolderScanBlock = currentBlock;
+  knownAddresses.delete("0x0000000000000000000000000000000000000000");
+}
+
+async function trackHolders(replyChatId = null) {
+  try {
+    await updateKnownHolders();
+
+    let count = 0;
+    for (const addr of knownAddresses) {
+      const [bal, staked] = await Promise.all([
+        pbtc.balanceOf(addr),
+        staking.staked(addr)
+      ]);
+      if (bal > 0n || staked > 0n) count++;
+      await new Promise((r) => setTimeout(r, 100)); // slow loop for safety
+    }
+
+    const message = `📊 *Current PBTC Holders:* ${count}`;
+    const targets = replyChatId ? [replyChatId] : TELEGRAM_CHAT_IDS.split(",");
+
+    for (const chatId of targets) {
+      await bot.sendMessage(chatId.trim(), message, { parse_mode: "Markdown" });
+    }
+
+    console.log(`[HolderBot] Posted: ${count} holders`);
+  } catch (err) {
+    console.error("Holder tracking error:", err.message);
+  }
+}
+
+bot.onText(/\/holders/, async (msg) => {
+  console.log(`[HolderBot] /holders command from ${msg.chat.username || msg.chat.id}`);
+  await trackHolders(msg.chat.id);
+});
+
+setInterval(trackHolders, 6 * 60 * 60 * 1000); // once per 6 hours
+trackHolders(); // run once on startup
