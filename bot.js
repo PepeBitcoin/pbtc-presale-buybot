@@ -138,7 +138,7 @@ let lastHolderScanBlock = 29988806; // set to PBTC creation block
 
 async function updateKnownHolders() {
   const currentBlock = await provider.getBlockNumber();
-  const batchSize = 500;
+  const batchSize = 1000;
 
   console.log(`[HolderBot] Scanning Transfer logs from ${lastHolderScanBlock + 1} to ${currentBlock}...`);
 
@@ -162,11 +162,15 @@ async function trackHolders(replyChatId = null) {
 
     let count = 0;
     for (const addr of knownAddresses) {
-      const [bal, staked] = await Promise.all([
-        pbtc.balanceOf(addr),
-        staking.staked(addr)
-      ]);
-      if (bal > 0n || staked > 0n) count++;
+      try {
+        const [bal, staked] = await Promise.all([
+          pbtc.balanceOf(addr),
+          staking.staked(addr)
+        ]);
+        if (bal > 0n || staked > 0n) count++;
+      } catch (err) {
+        console.warn(`⚠️ Skipping ${addr}: ${err.message}`);
+      }
       await new Promise((r) => setTimeout(r, 100)); // slow loop for safety
     }
 
@@ -174,7 +178,7 @@ async function trackHolders(replyChatId = null) {
     const targets = replyChatId ? [replyChatId] : TELEGRAM_CHAT_IDS.split(",");
 
     for (const chatId of targets) {
-      await bot.sendMessage(chatId.trim(), message, { parse_mode: "Markdown" });
+      await bot.sendMessage(String(chatId).trim(), message, { parse_mode: "Markdown" });
     }
 
     console.log(`[HolderBot] Posted: ${count} holders`);
