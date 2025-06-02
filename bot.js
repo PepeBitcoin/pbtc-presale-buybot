@@ -1,29 +1,44 @@
+// PBTC Uniswap-V3 Buy-Bot + Holder Counter
+// ---------------------------------------
+// ENV needed: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS (comma-sep),
+//             RPC_URL, START_BLOCK, PBTC_TOKEN_ADDRESS, STAKING_CONTRACT_ADDRESS
+
 const { JsonRpcProvider, Contract, formatUnits } = require("ethers");
 const TelegramBot = require("node-telegram-bot-api");
-const fs = require("fs");
 const path = require("path");
+require("dotenv").config();
 
 const {
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHAT_IDS,
   RPC_URL,
-  PRESALE_CONTRACT_ADDRESS,
   START_BLOCK,
   PBTC_TOKEN_ADDRESS,
-  STAKING_CONTRACT_ADDRESS
+  STAKING_CONTRACT_ADDRESS,
 } = process.env;
 
-// Init Telegram bot
+// ────────────────────────  Telegram  ────────────────────────
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+const chatIds = TELEGRAM_CHAT_IDS.split(",").map((c) => c.trim());
 
-// ABI
-const presaleAbi = require("./abi/PresaleABI.json");
+// ────────────────────────  Constants  ────────────────────────
+const POOL_ADDRESS = "0xc3fd337dfc5700565a5444e3b0723920802a426d"; // PBTC / USDT
+const USDT_DECIMALS = 6;
+const PBTC_DECIMALS = 18;
+const MIN_USDT = 10; // USD threshold
 
-// Provider + contract
+// ────────────────────────  Provider  ────────────────────────
 const provider = new JsonRpcProvider(RPC_URL);
-const presaleContract = new Contract(PRESALE_CONTRACT_ADDRESS, presaleAbi, provider);
 
-// Image tiers
+// ────────────────────────  Pool ABI  ────────────────────────
+const uniV3PoolAbi = [
+  "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)",
+];
+
+// Pool contract
+const pool = new Contract(POOL_ADDRESS, uniV3PoolAbi, provider);
+
+// ────────────────────────  Tier Helpers  ────────────────────────
 function getTier(usdt) {
   if (usdt < 50) return { emoji: "🦐", label: "Shrimp", image: "buy.jpg" };
   if (usdt < 200) return { emoji: "🐟", label: "Fish", image: "buy.jpg" };
@@ -31,166 +46,144 @@ function getTier(usdt) {
   return { emoji: "🐋", label: "Whale", image: "buy.jpg" };
 }
 
-// Format values
-function formatAmount(amount, decimals = 18) {
+function formatAmount(amount, decimals) {
   return parseFloat(formatUnits(amount, decimals)).toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 6,
   });
 }
 
-// Progress bar
-function generateProgressBar(current, max, barLength = 10) {
-  const percent = Math.min(current / max, 1);
-  const filledLength = Math.round(barLength * percent);
-  const emptyLength = barLength - filledLength;
-  const bar = "▰".repeat(filledLength) + "▱".repeat(emptyLength);
-  const percentText = `${Math.round(percent * 100)}%`;
-  return `${bar} ${percentText}`;
-}
-
-// Broadcast buy to all chats
+// ────────────────────────  Broadcast  ────────────────────────
 async function broadcastBuy({ user, usdt, pbtc, txHash }) {
-  const totalRaised = parseFloat(formatUnits(await presaleContract.totalRaised(), 6));
-  const hardcap = parseFloat(formatUnits(await presaleContract.hardcap(), 6));
-  const progressBar = generateProgressBar(totalRaised, hardcap);
+  const tier = getTier(usdt);
   const shortAddr = `${user.slice(0, 6)}...${user.slice(-4)}`;
   const txLink = `https://basescan.org/tx/${txHash}`;
-  const tier = getTier(usdt);
-  const message =
+
+  const caption =
     `${tier.emoji} *New ${tier.label} Buy!*\n\n` +
     `👤 [${shortAddr}](https://basescan.org/address/${user})\n` +
     `💵 *$${usdt.toFixed(2)}* USDT\n` +
     `💰 *${pbtc}* PBTC\n\n` +
-    `🎯 *${totalRaised.toLocaleString()} / ${hardcap.toLocaleString()}* USDT raised\n` +
-    `${progressBar}\n\n` +
     `🔗 [View on BaseScan](${txLink})`;
 
-  const imagePath = path.join(__dirname, "images", tier.image);
-  const chatIds = TELEGRAM_CHAT_IDS.split(",");
+  const photoPath = path.join(__dirname, "images", tier.image);
 
   for (const chatId of chatIds) {
-    await bot.sendPhoto(chatId.trim(), imagePath, {
-      caption: message,
-      parse_mode: "Markdown"
+    await bot.sendPhoto(chatId, photoPath, {
+      caption,
+      parse_mode: "Markdown",
     });
-    await new Promise(r => setTimeout(r, 300)); // avoid spam throttle
+    await new Promise((r) => setTimeout(r, 300)); // anti-spam
   }
 
-  console.log(`[BuyBot] ${tier.label} | $${usdt.toFixed(2)} | ${progressBar}`);
+  console.log(`[BuyBot] ${tier.label} | $${usdt.toFixed(2)} | ${shortAddr}`);
 }
 
-// Track last block seen
+// ────────────────────────  Swap Poller  ────────────────────────
 let lastBlock = START_BLOCK ? parseInt(START_BLOCK) : 0;
 
-async function pollNewBuys() {
+async function pollSwaps() {
   try {
-    const currentBlock = await provider.getBlockNumber();
+    const current = await provider.getBlockNumber();
+    if (lastBlock === 0) lastBlock = current - 1;
 
-    if (lastBlock === 0) {
-      lastBlock = currentBlock - 1;
-    }
+    const batch = 500;
+    for (let from = lastBlock + 1; from <= current; from += batch) {
+      const to = Math.min(from + batch - 1, current);
 
-    const maxRange = 500;
-    const start = lastBlock + 1;
-    const end = currentBlock;
+      const events = await pool.queryFilter("Swap", from, to);
+      lastBlock = to;
 
-    for (let fromBlock = start; fromBlock <= end; fromBlock += maxRange) {
-      const toBlock = Math.min(fromBlock + maxRange - 1, end);
+      for (const ev of events) {
+        const { recipient, amount0, amount1 } = ev.args;
 
-      const events = await presaleContract.queryFilter("Purchased", fromBlock, toBlock);
-      lastBlock = toBlock;
+        // BUY = USDT in (amount1 > 0) & PBTC out (amount0 < 0)
+        if (amount0 < 0n && amount1 > 0n) {
+          const usdt = parseFloat(formatUnits(amount1, USDT_DECIMALS));
+          if (usdt < MIN_USDT) continue; // below threshold
 
-      for (const e of events) {
-        const { user, usdtAmount, pbtcAmount } = e.args;
-        const txHash = e.transactionHash;
-        const usdt = parseFloat(formatUnits(usdtAmount, 6));
-        const pbtc = formatAmount(pbtcAmount, 18);
-
-        await broadcastBuy({ user, usdt, pbtc, txHash });
+          const pbtc = formatAmount(-amount0, PBTC_DECIMALS);
+          await broadcastBuy({
+            user: recipient,
+            usdt,
+            pbtc,
+            txHash: ev.transactionHash,
+          });
+        }
       }
     }
   } catch (err) {
-    console.error("Polling error:", err.message);
+    console.error("Swap poll error:", err.message);
   }
 }
 
+setInterval(pollSwaps, 10_000);
+console.log("✅ PBTC buy bot is polling Uniswap swaps…");
 
-// Start polling
-setInterval(pollNewBuys, 10000);
-console.log("✅ PBTC buy bot is polling for purchases...");
-
-
-// Holder tracker setup
-// Load staking + token contracts
+// ────────────────────────  Holder Counter  ────────────────────────
 const stakingAbi = require("./abi/StakingContractABI.json");
 const pbtcAbi = [
   "event Transfer(address indexed from, address indexed to, uint256 value)",
-  "function balanceOf(address) view returns (uint256)"
+  "function balanceOf(address) view returns (uint256)",
+  "function decimals() view returns (uint8)",
 ];
 
 const pbtc = new Contract(PBTC_TOKEN_ADDRESS, pbtcAbi, provider);
 const staking = new Contract(STAKING_CONTRACT_ADDRESS, stakingAbi, provider);
 
 let knownAddresses = new Set();
-
-let lastHolderScanBlock = 29988806; // set to PBTC creation block
+let lastHolderScanBlock = 29988806; // PBTC deployment block – update if needed
 
 async function updateKnownHolders() {
-  const currentBlock = await provider.getBlockNumber();
-  const batchSize = 500;
+  const current = await provider.getBlockNumber();
+  const step = 500;
 
-  console.log(`[HolderBot] Scanning Transfer logs from ${lastHolderScanBlock + 1} to ${currentBlock}...`);
+  console.log(`[HolderBot] Scanning blocks ${lastHolderScanBlock + 1} → ${current}…`);
 
-  for (let from = lastHolderScanBlock + 1; from <= currentBlock; from += batchSize) {
-    const to = Math.min(from + batchSize - 1, currentBlock);
+  for (let from = lastHolderScanBlock + 1; from <= current; from += step) {
+    const to = Math.min(from + step - 1, current);
     const logs = await pbtc.queryFilter("Transfer", from, to);
-    for (const log of logs) {
-      knownAddresses.add(log.args.from.toLowerCase());
-      knownAddresses.add(log.args.to.toLowerCase());
+
+    for (const lg of logs) {
+      knownAddresses.add(lg.args.from.toLowerCase());
+      knownAddresses.add(lg.args.to.toLowerCase());
     }
-    console.log(`[HolderBot] Scanned blocks ${from}-${to} | Total known: ${knownAddresses.size}`);
   }
 
-  lastHolderScanBlock = currentBlock;
+  lastHolderScanBlock = current;
   knownAddresses.delete("0x0000000000000000000000000000000000000000");
 }
 
-async function trackHolders(replyChatId = null) {
+async function trackHolders(replyChat = null) {
   try {
     await updateKnownHolders();
 
-    let count = 0;
+    let holders = 0;
     for (const addr of knownAddresses) {
       try {
         const [bal, staked] = await Promise.all([
           pbtc.balanceOf(addr),
-          staking.staked(addr)
+          staking.staked(addr),
         ]);
-        if (bal > 0n || staked > 0n) count++;
-      } catch (err) {
-        console.warn(`⚠️ Skipping ${addr}: ${err.message}`);
-      }
-      await new Promise((r) => setTimeout(r, 100)); // slow loop for safety
+        if (bal > 0n || staked > 0n) holders++;
+      } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
     }
 
-    const message = `📊 *Current PBTC Holders:* ${count}`;
-    const targets = replyChatId ? [replyChatId] : TELEGRAM_CHAT_IDS.split(",");
+    const msg = `📊 *Current PBTC Holders:* ${holders}`;
+    const targets = replyChat ? [replyChat] : chatIds;
 
-    for (const chatId of targets) {
-      await bot.sendMessage(String(chatId).trim(), message, { parse_mode: "Markdown" });
+    for (const cid of targets) {
+      await bot.sendMessage(cid, msg, { parse_mode: "Markdown" });
     }
 
-    console.log(`[HolderBot] Posted: ${count} holders`);
+    console.log(`[HolderBot] Posted count: ${holders}`);
   } catch (err) {
     console.error("Holder tracking error:", err.message);
   }
 }
 
-bot.onText(/\/holders/, async (msg) => {
-  console.log(`[HolderBot] /holders command from ${msg.chat.username || msg.chat.id}`);
-  await trackHolders(msg.chat.id);
-});
+bot.onText(/\/holders/, (msg) => trackHolders(msg.chat.id));
 
-setInterval(trackHolders, 6 * 60 * 60 * 1000); // once per 6 hours
-trackHolders(); // run once on startup
+setInterval(trackHolders, 6 * 60 * 60 * 1000); // every 6 h
+trackHolders(); // run once on start
