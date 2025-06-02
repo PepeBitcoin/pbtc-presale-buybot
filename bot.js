@@ -76,25 +76,42 @@ async function isEOA(address) {
   return (await provider.getCode(address)) === "0x";
 }
 
-/* ─────────── Resolve buyer address ─────────── */
+/* ─────────── Resolve buyer address (v2) ─────────── */
 async function resolveBuyer(ev) {
-  // 1. tx.from
+  // 1. tx.from if EOA
   const tx = await provider.getTransaction(ev.transactionHash);
-  if (await isEOA(tx.from)) return getAddress(tx.from);
+  if ((await provider.getCode(tx.from)) === "0x") return getAddress(tx.from);
 
-  // 2. Swap.recipient
-  if (await isEOA(ev.args.recipient)) return getAddress(ev.args.recipient);
+  // 2. Swap.recipient if EOA
+  if ((await provider.getCode(ev.args.recipient)) === "0x")
+    return getAddress(ev.args.recipient);
 
-  // 3. First PBTC Transfer -> EOA
+  // 3. Scan ALL PBTC Transfer logs and pick the largest one that lands on an EOA
   const receipt = await provider.getTransactionReceipt(ev.transactionHash);
-  for (const lg of receipt.logs) {
-    if (lg.address.toLowerCase() !== PBTC_TOKEN_ADDRESS.toLowerCase()) continue;
-    if (lg.topics[0] !== TRANSFER_TOPIC) continue;
 
-    const { to } = iface.decodeEventLog("Transfer", lg.data, lg.topics);
-    if (await isEOA(to)) return getAddress(to);
+  let bestAddr = null;
+  let bestValue = 0n;
+
+  for (const lg of receipt.logs) {
+    if (
+      lg.address.toLowerCase() !== PBTC_TOKEN_ADDRESS.toLowerCase() ||
+      lg.topics[0] !== TRANSFER_TOPIC
+    )
+      continue;
+
+    const { to, value } = iface.decodeEventLog("Transfer", lg.data, lg.topics);
+
+    if ((await provider.getCode(to)) !== "0x") continue; // skip contracts
+
+    if (value > bestValue) {
+      bestValue = value;
+      bestAddr = to;
+    }
   }
-  // Fallback
+
+  if (bestAddr) return getAddress(bestAddr);
+
+  // 4. Fallback: tx.from (even if contract)
   return getAddress(tx.from);
 }
 
