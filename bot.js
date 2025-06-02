@@ -76,43 +76,45 @@ async function isEOA(address) {
   return (await provider.getCode(address)) === "0x";
 }
 
-/* ─────────── Resolve buyer address (v2) ─────────── */
+/* ─────────── Resolve buyer address (v3, net-balance algorithm) ─────────── */
 async function resolveBuyer(ev) {
-  // 1. tx.from if EOA
-  const tx = await provider.getTransaction(ev.transactionHash);
-  if ((await provider.getCode(tx.from)) === "0x") return getAddress(tx.from);
+  const tx       = await provider.getTransaction(ev.transactionHash);
+  const receipt  = await provider.getTransactionReceipt(ev.transactionHash);
 
-  // 2. Swap.recipient if EOA
-  if ((await provider.getCode(ev.args.recipient)) === "0x")
-    return getAddress(ev.args.recipient);
-
-  // 3. Scan ALL PBTC Transfer logs and pick the largest one that lands on an EOA
-  const receipt = await provider.getTransactionReceipt(ev.transactionHash);
-
-  let bestAddr = null;
-  let bestValue = 0n;
-
+  // ── Build net PBTC balance map for every address in this tx ──
+  const deltas = new Map();      // address → BigInt balance change
   for (const lg of receipt.logs) {
     if (
       lg.address.toLowerCase() !== PBTC_TOKEN_ADDRESS.toLowerCase() ||
       lg.topics[0] !== TRANSFER_TOPIC
-    )
-      continue;
+    ) continue;
 
-    const { to, value } = iface.decodeEventLog("Transfer", lg.data, lg.topics);
+    const { from, to, value } =
+      iface.decodeEventLog("Transfer", lg.data, lg.topics);
 
-    if ((await provider.getCode(to)) !== "0x") continue; // skip contracts
+    deltas.set(from, (deltas.get(from) || 0n) - value);
+    deltas.set(to,   (deltas.get(to)   || 0n) + value);
+  }
 
-    if (value > bestValue) {
-      bestValue = value;
-      bestAddr = to;
+  // ── Pick EOA with the largest positive PBTC gain ──
+  let bestAddr  = null;
+  let bestDelta = 0n;
+
+  for (const [addr, delta] of deltas) {
+    if (delta <= 0n) continue;                 // must be net receiver
+    if ((await provider.getCode(addr)) !== "0x") continue; // skip contracts
+    if (delta > bestDelta) {
+      bestDelta = delta;
+      bestAddr  = addr;
     }
   }
 
-  if (bestAddr) return getAddress(bestAddr);
-
-  // 4. Fallback: tx.from (even if contract)
-  return getAddress(tx.from);
+  // ── Fallbacks ──
+  if (bestAddr)                         return getAddress(bestAddr); // ✅
+  if ((await provider.getCode(tx.from)) === "0x") return getAddress(tx.from);
+  if ((await provider.getCode(ev.args.recipient)) === "0x")
+                                           return getAddress(ev.args.recipient);
+  return getAddress(tx.from);            // last-ditch (contract) fallback
 }
 
 /* ─────────── Broadcast ─────────── */
