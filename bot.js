@@ -1,9 +1,9 @@
-// PBTC Uniswap-V3 Buy-Bot   (now shows Market Cap)
-// -------------------------------------------------
+// PBTC Uniswap-V3 Buy-Bot   (buyer-address fix + mcap)
+// ---------------------------------------------------
 // ENV: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_IDS, RPC_URL, START_BLOCK,
 //      PBTC_TOKEN_ADDRESS, STAKING_CONTRACT_ADDRESS
 
-const { JsonRpcProvider, Contract, formatUnits } = require("ethers");
+const { JsonRpcProvider, Contract, Interface, formatUnits, id, getAddress } = require("ethers");
 const TelegramBot = require("node-telegram-bot-api");
 const path = require("path");
 
@@ -16,52 +16,55 @@ const {
   STAKING_CONTRACT_ADDRESS,
 } = process.env;
 
-/* ─────────────────  Telegram  ───────────────── */
-const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+/* ─────────── Telegram ─────────── */
+const bot     = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 const chatIds = TELEGRAM_CHAT_IDS.split(",").map((c) => c.trim());
 
-/* ─────────────────  Pool constants  ───────────────── */
-const POOL_ADDRESS = "0xc3fd337dfc5700565a5444e3b0723920802a426d"; // PBTC/USDT
-const USDT_DECIMALS = 6;
-const PBTC_DECIMALS = 18;
-const MIN_USDT = 10;
+/* ─────────── Pool & token setup ─────────── */
+const POOL_ADDRESS   = "0xc3fd337dfc5700565a5444e3b0723920802a426d"; // PBTC / USDT
+const USDT_DECIMALS  = 6;
+const PBTC_DECIMALS  = 18;
+const MIN_USDT       = 10;
+const TRANSFER_TOPIC = id("Transfer(address,address,uint256)");      // keccak256 event sig
 
-/* ─────────────────  RPC  ───────────────── */
+/* ─────────── RPC / contracts ─────────── */
 const provider = new JsonRpcProvider(RPC_URL);
 
-/* ─────────────────  Contracts  ───────────────── */
 const uniV3PoolAbi = [
   "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)",
 ];
 const pool = new Contract(POOL_ADDRESS, uniV3PoolAbi, provider);
 
-const stakingAbi = require("./abi/StakingContractABI.json");
 const pbtcAbi = [
   "event Transfer(address indexed from, address indexed to, uint256 value)",
   "function balanceOf(address) view returns (uint256)",
   "function totalSupply() view returns (uint256)",
 ];
-const pbtc = new Contract(PBTC_TOKEN_ADDRESS, pbtcAbi, provider);
+const stakingAbi = require("./abi/StakingContractABI.json");
+
+const pbtc    = new Contract(PBTC_TOKEN_ADDRESS, pbtcAbi, provider);
 const staking = new Contract(STAKING_CONTRACT_ADDRESS, stakingAbi, provider);
 
-/* ─────────────────  Globals  ───────────────── */
+const iface = new Interface(pbtcAbi);   // for decoding Transfer logs
+
+/* ─────────── Globals ─────────── */
 let TOTAL_SUPPLY = 100_000_000; // fallback
 (async () => {
   try {
     const raw = await pbtc.totalSupply();
     TOTAL_SUPPLY = parseFloat(formatUnits(raw, PBTC_DECIMALS));
-    console.log(`[Init] Fetched total supply: ${TOTAL_SUPPLY.toLocaleString()} PBTC`);
+    console.log(`[Init] totalSupply = ${TOTAL_SUPPLY.toLocaleString()}`);
   } catch {
-    console.warn(`[Init] Could not fetch totalSupply(), using 100 M fallback`);
+    console.warn(`[Init] using fallback totalSupply 100 M`);
   }
 })();
 
-/* ─────────────────  Helper fns  ───────────────── */
+/* ─────────── Helper fns ─────────── */
 function tier(usdt) {
-  if (usdt < 50) return { emoji: "🦐", label: "Shrimp", img: "buy.jpg" };
-  if (usdt < 200) return { emoji: "🐟", label: "Fish", img: "buy.jpg" };
-  if (usdt < 500) return { emoji: "🐬", label: "Dolphin", img: "buy.jpg" };
-  return { emoji: "🐋", label: "Whale", img: "buy.jpg" };
+  if (usdt < 50)  return { emoji: "🦐", label: "Shrimp", img: "buy.jpg" };
+  if (usdt < 200) return { emoji: "🐟", label: "Fish",   img: "buy.jpg" };
+  if (usdt < 500) return { emoji: "🐬", label: "Dolphin",img: "buy.jpg" };
+  return             { emoji: "🐋", label: "Whale",  img: "buy.jpg" };
 }
 function fmt(num, dec = 2) {
   return num.toLocaleString(undefined, {
@@ -69,14 +72,40 @@ function fmt(num, dec = 2) {
     maximumFractionDigits: dec,
   });
 }
+async function isEOA(address) {
+  return (await provider.getCode(address)) === "0x";
+}
 
-/* ─────────────────  Broadcast  ───────────────── */
+/* ─────────── Resolve buyer address ─────────── */
+async function resolveBuyer(ev) {
+  // 1. tx.from
+  const tx = await provider.getTransaction(ev.transactionHash);
+  if (await isEOA(tx.from)) return getAddress(tx.from);
+
+  // 2. Swap.recipient
+  if (await isEOA(ev.args.recipient)) return getAddress(ev.args.recipient);
+
+  // 3. First PBTC Transfer -> EOA
+  const receipt = await provider.getTransactionReceipt(ev.transactionHash);
+  for (const lg of receipt.logs) {
+    if (lg.address.toLowerCase() !== PBTC_TOKEN_ADDRESS.toLowerCase()) continue;
+    if (lg.topics[0] !== TRANSFER_TOPIC) continue;
+
+    const { to } = iface.decodeEventLog("Transfer", lg.data, lg.topics);
+    if (await isEOA(to)) return getAddress(to);
+  }
+  // Fallback
+  return getAddress(tx.from);
+}
+
+/* ─────────── Broadcast ─────────── */
 async function sendBuy({ buyer, usdt, pbtcAmt, txHash }) {
   const price = usdt / pbtcAmt;
-  const mcap = price * TOTAL_SUPPLY;
-  const t = tier(usdt);
+  const mcap  = price * TOTAL_SUPPLY;
+
+  const t     = tier(usdt);
   const short = `${buyer.slice(0, 6)}...${buyer.slice(-4)}`;
-  const link = `https://basescan.org/tx/${txHash}`;
+  const link  = `https://basescan.org/tx/${txHash}`;
 
   const caption =
     `${t.emoji} *New ${t.label} Buy!*\n\n` +
@@ -87,16 +116,14 @@ async function sendBuy({ buyer, usdt, pbtcAmt, txHash }) {
     `🔗 [View on BaseScan](${link})`;
 
   const pic = path.join(__dirname, "images", t.img);
-
   for (const id of chatIds) {
     await bot.sendPhoto(id, pic, { caption, parse_mode: "Markdown" });
     await new Promise((r) => setTimeout(r, 300));
   }
-
-  console.log(`[BuyBot] ${t.label} | $${fmt(usdt)} | Mcap $${fmt(mcap, 0)}`);
+  console.log(`[BuyBot] ${t.label} | $${fmt(usdt)} | ${short}`);
 }
 
-/* ─────────────────  Swap poller  ───────────────── */
+/* ─────────── Swap poller ─────────── */
 let lastBlock = START_BLOCK ? Number(START_BLOCK) : 0;
 
 async function pollSwaps() {
@@ -113,14 +140,13 @@ async function pollSwaps() {
       for (const ev of events) {
         const { amount0, amount1 } = ev.args;
 
-        // Buy: PBTC out (amount0 < 0) & USDT in (amount1 > 0)
+        // PBTC out (amount0 < 0) & USDT in (amount1 > 0)
         if (amount0 < 0n && amount1 > 0n) {
           const usdt = parseFloat(formatUnits(amount1, USDT_DECIMALS));
           if (usdt < MIN_USDT) continue;
 
-          const tx = await provider.getTransaction(ev.transactionHash);
-          const buyer = tx.from;
           const pbtcAmt = parseFloat(formatUnits(-amount0, PBTC_DECIMALS));
+          const buyer   = await resolveBuyer(ev);
 
           await sendBuy({ buyer, usdt, pbtcAmt, txHash: ev.transactionHash });
         }
@@ -130,11 +156,10 @@ async function pollSwaps() {
     console.error("Swap poll error:", err.message);
   }
 }
-
 setInterval(pollSwaps, 10_000);
 console.log("✅ PBTC buy bot polling swaps…");
 
-/* ─────────────────  HOLDER COUNTER (unchanged)  ───────────────── */
+/* ─────────── HOLDER COUNTER (unchanged) ─────────── */
 let known = new Set();
 let lastScan = 29988806;
 
@@ -166,8 +191,9 @@ async function holders(reply = null) {
       await new Promise((r) => setTimeout(r, 100));
     }
     const msg = `📊 *Current PBTC Holders:* ${n}`;
-    const targets = reply ? [reply] : chatIds;
-    targets.forEach((cid) => bot.sendMessage(cid, msg, { parse_mode: "Markdown" }));
+    (reply ? [reply] : chatIds).forEach((cid) =>
+      bot.sendMessage(cid, msg, { parse_mode: "Markdown" })
+    );
     console.log(`[HolderBot] Posted ${n}`);
   } catch (e) {
     console.error("Holder track error:", e.message);
