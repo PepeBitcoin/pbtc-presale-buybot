@@ -118,11 +118,10 @@ async function resolveBuyer(ev) {
 }
 
 /* ─────────── Broadcast ─────────── */
-async function sendBuy({ buyer, usdt, pbtcAmt, txHash }) {
-  const price = usdt / pbtcAmt;
+async function sendBuy({ buyer, usdt, pbtcAmt, price, txHash }) {
   const mcap  = price * TOTAL_SUPPLY;
-
   const t     = tier(usdt);
+
   const short = `${buyer.slice(0, 6)}...${buyer.slice(-4)}`;
   const link  = `https://basescan.org/tx/${txHash}`;
 
@@ -131,6 +130,7 @@ async function sendBuy({ buyer, usdt, pbtcAmt, txHash }) {
     `👤 [${short}](https://basescan.org/address/${buyer})\n` +
     `💵 *$${fmt(usdt)}* USDT\n` +
     `💰 *${fmt(pbtcAmt, 6)}* PBTC\n` +
+    `🏷️ *Price:* $${fmt(price, 6)}\n` +
     `🏷️ *Mcap:* $${fmt(mcap, 0)}\n\n` +
     `🔗 [View on BaseScan](${link})`;
 
@@ -139,8 +139,10 @@ async function sendBuy({ buyer, usdt, pbtcAmt, txHash }) {
     await bot.sendPhoto(id, pic, { caption, parse_mode: "Markdown" });
     await new Promise((r) => setTimeout(r, 300));
   }
+
   console.log(`[BuyBot] ${t.label} | $${fmt(usdt)} | ${short}`);
 }
+
 
 /* ─────────── Swap poller ─────────── */
 let lastBlock = START_BLOCK ? Number(START_BLOCK) : 0;
@@ -161,13 +163,21 @@ async function pollSwaps() {
 
         // PBTC out (amount0 < 0) & USDT in (amount1 > 0)
         if (amount0 < 0n && amount1 > 0n) {
-          const usdt = parseFloat(formatUnits(amount1, USDT_DECIMALS));
+          const usdt    = parseFloat(formatUnits(amount1, USDT_DECIMALS));
           if (usdt < MIN_USDT) continue;
-
+        
           const pbtcAmt = parseFloat(formatUnits(-amount0, PBTC_DECIMALS));
+          const price   = usdt / pbtcAmt;
+        
           const buyer   = await resolveBuyer(ev);
-
-          await sendBuy({ buyer, usdt, pbtcAmt, txHash: ev.transactionHash });
+        
+          await sendBuy({
+            buyer,
+            usdt,
+            pbtcAmt,
+            price,
+            txHash: ev.transactionHash,
+          });
         }
       }
     }
