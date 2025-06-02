@@ -6,7 +6,6 @@
 const { JsonRpcProvider, Contract, formatUnits } = require("ethers");
 const TelegramBot = require("node-telegram-bot-api");
 const path = require("path");
-require("dotenv").config();
 
 const {
   TELEGRAM_BOT_TOKEN,
