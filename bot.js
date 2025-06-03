@@ -71,7 +71,7 @@ let TOTAL_SUPPLY = 100_000_000; // fallback
   }
 })();
 
-let lastFactoryBlock  = START_BLOCK ? Number(START_BLOCK) : 0;
+let lastFactoryBlock  = 31010297;
 let lastSwapBlock     = START_BLOCK ? Number(START_BLOCK) : 0;
 
 /* ─────────── Helper fns ─────────── */
