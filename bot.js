@@ -125,6 +125,19 @@ async function sendBuy({ buyer, usdt, pbtcAmt, price, txHash }) {
   const short = `${buyer.slice(0, 6)}...${buyer.slice(-4)}`;
   const link  = `https://basescan.org/tx/${txHash}`;
 
+  const inlineKeyboard = [
+    [
+      {
+        text: "📈 Chart",
+        url: "https://dexscreener.com/base/0xc3fd337dfc5700565a5444e3b0723920802a426d"
+      },
+      {
+        text: "💵 Buy",
+        url: "https://app.uniswap.org/swap?chain=base&inputCurrency=0xfde4c96c8593536e31f229ea8f37b2ada2699bb2&outputCurrency=0x31705474c1f2de7f738e34233c49522ca1e3c53c"
+      }
+    ]
+  ];
+  
   const caption =
     `${t.emoji} *New ${t.label} Buy!*\n\n` +
     `👤 [${short}](https://basescan.org/address/${buyer})\n` +
@@ -135,8 +148,14 @@ async function sendBuy({ buyer, usdt, pbtcAmt, price, txHash }) {
     `🔗 [View on BaseScan](${link})`;
 
   const pic = path.join(__dirname, "images", t.img);
-  for (const id of chatIds) {
-    await bot.sendPhoto(id, pic, { caption, parse_mode: "Markdown" });
+  for (const chatId of chatIds) {
+    await bot.sendPhoto(chatId, pic, {
+      caption,
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: inlineKeyboard
+      }
+    });
     await new Promise((r) => setTimeout(r, 300));
   }
 
