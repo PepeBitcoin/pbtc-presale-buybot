@@ -25,27 +25,15 @@ const POOL_ADDRESS   = "0xc3fd337dfc5700565a5444e3b0723920802a426d"; // PBTC / U
 const USDT_DECIMALS  = 6;
 const PBTC_DECIMALS  = 18;
 const MIN_USDT       = 10;
-const FACTORY_ADDRESS  = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"; // Uniswap V3 Factory on Base
 const TRANSFER_TOPIC = id("Transfer(address,address,uint256)");      // keccak256 event sig
 
 /* ─────────── RPC / contracts ─────────── */
 const provider = new JsonRpcProvider(RPC_URL);
 
-
-// Uniswap V3 Factory ABI (only PoolCreated needed)
-const factoryAbi = [
-  "event PoolCreated(address indexed token0, address indexed token1, uint24 fee, int24 tickSpacing, address pool)"
-];
-const factory = new Contract(FACTORY_ADDRESS, factoryAbi, provider);
-
-
-// Map of poolAddress → Contract instance
-const poolContracts = {};
-
-// ABI to read Swap events from any V3 pool
 const uniV3PoolAbi = [
-  "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)"
+  "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)",
 ];
+const pool = new Contract(POOL_ADDRESS, uniV3PoolAbi, provider);
 
 const pbtcAbi = [
   "event Transfer(address indexed from, address indexed to, uint256 value)",
@@ -71,9 +59,6 @@ let TOTAL_SUPPLY = 100_000_000; // fallback
   }
 })();
 
-let lastFactoryBlock  = 31010297;
-let lastSwapBlock     = START_BLOCK ? Number(START_BLOCK) : 0;
-
 /* ─────────── Helper fns ─────────── */
 function tier(usdt) {
   if (usdt < 50)  return { emoji: "🦐", label: "Shrimp", img: "buy.jpg" };
@@ -91,134 +76,45 @@ async function isEOA(address) {
   return (await provider.getCode(address)) === "0x";
 }
 
-/*────────────────────── Update Pools ──────────────────────*/
-/**
- * Queries the Uniswap V3 Factory for any new PoolCreated events since `lastFactoryBlock`.
- * For each event where token0===PBTC or token1===PBTC, adds a new Contract to `poolContracts`.
- */
-async function updatePools() {
-  const currentBlock = await provider.getBlockNumber();
-  const startBlock   = lastFactoryBlock + 1;
-  const endBlock     = currentBlock;
-
-  if (startBlock > endBlock) {
-    lastFactoryBlock = endBlock;
-    return;
-  }
-
-  // chunk through [startBlock..endBlock] in ≤ 500-block windows
-  const CHUNK_SIZE = 500;
-  for (
-    let from = startBlock;
-    from <= endBlock;
-    from += CHUNK_SIZE
-  ) {
-    const to = Math.min(from + CHUNK_SIZE - 1, endBlock);
-    const events = await factory.queryFilter("PoolCreated", from, to);
-
-    for (const ev of events) {
-      const { token0, token1, pool: poolAddr } = ev.args;
-      if (
-        token0.toLowerCase() === PBTC_TOKEN_ADDRESS.toLowerCase() ||
-        token1.toLowerCase() === PBTC_TOKEN_ADDRESS.toLowerCase()
-      ) {
-        const normalized = poolAddr.toLowerCase();
-        if (!poolContracts[normalized]) {
-          poolContracts[normalized] = new Contract(
-            poolAddr,
-            uniV3PoolAbi,
-            provider
-          );
-          console.log(`[Pools] Added PBTC pool: ${poolAddr}`);
-        }
-      }
-    }
-  }
-
-  lastFactoryBlock = endBlock;
-}
-
-/*────────────────────── Resolve Buyer Address ──────────────────────*/
-/**
- * For a given Swap event `ev`, finds the exact EOA that ultimately received the
- * swapped PBTC. Logic:
- *   1. Compute `swappedPBTC = |-amount0|`.
- *   2. Scan receipt.logs for Transfer(from=POOL_ADDRESS, payload=swappedPBTC) → initialRecipient.
- *   3. If that initialRecipient is an EOA (code === "0x"), return it.
- *   4. Otherwise, “chase” the exact‐value PBTC transfers out of that contract until we hit an EOA.
- *   5. Fallback: return tx.from.
- */
+/* ─────────── Resolve buyer address (v3, net-balance algorithm) ─────────── */
 async function resolveBuyer(ev) {
-  const txHash  = ev.transactionHash;
-  const receipt = await provider.getTransactionReceipt(txHash);
+  const tx       = await provider.getTransaction(ev.transactionHash);
+  const receipt  = await provider.getTransactionReceipt(ev.transactionHash);
 
-  // How many PBTC moved in that Swap? (always amount0 < 0 for buys on PBTC=token0 pools)
-  const swappedPBTC = ev.args.amount0 < 0n ? -ev.args.amount0 : ev.args.amount0;
-
-  // 1. Find the log where the pool address sent exactly `swappedPBTC` to someone
-  let initialRecipient = null;
+  // ── Build net PBTC balance map for every address in this tx ──
+  const deltas = new Map();      // address → BigInt balance change
   for (const lg of receipt.logs) {
-    // Only consider logs from this pool
     if (
-      lg.address.toLowerCase() === ev.address.toLowerCase() && 
-      lg.topics[0] === TRANSFER_TOPIC
-    ) {
-      const { from, to, value } = iface.decodeEventLog("Transfer", lg.data, lg.topics);
-      if (
-        from.toLowerCase() === ev.address.toLowerCase() &&
-        value === swappedPBTC
-      ) {
-        initialRecipient = to;
-        break;
-      }
+      lg.address.toLowerCase() !== PBTC_TOKEN_ADDRESS.toLowerCase() ||
+      lg.topics[0] !== TRANSFER_TOPIC
+    ) continue;
+
+    const { from, to, value } =
+      iface.decodeEventLog("Transfer", lg.data, lg.topics);
+
+    deltas.set(from, (deltas.get(from) || 0n) - value);
+    deltas.set(to,   (deltas.get(to)   || 0n) + value);
+  }
+
+  // ── Pick EOA with the largest positive PBTC gain ──
+  let bestAddr  = null;
+  let bestDelta = 0n;
+
+  for (const [addr, delta] of deltas) {
+    if (delta <= 0n) continue;                 // must be net receiver
+    if ((await provider.getCode(addr)) !== "0x") continue; // skip contracts
+    if (delta > bestDelta) {
+      bestDelta = delta;
+      bestAddr  = addr;
     }
   }
 
-  if (!initialRecipient) {
-    // If we couldn’t find a “pool→someone exact” log, fallback to tx.from or recipient
-    const tx = await provider.getTransaction(txHash);
-    if ((await provider.getCode(tx.from)) === "0x") return getAddress(tx.from);
-    if ((await provider.getCode(ev.args.recipient)) === "0x")
-      return getAddress(ev.args.recipient);
-    return getAddress(tx.from);
-  }
-
-  let currentHolder = initialRecipient;
-
-  // 2. If that first recipient is an EOA, return it:
-  if ((await provider.getCode(currentHolder)) === "0x") {
-    return getAddress(currentHolder);
-  }
-
-  // 3. Otherwise, chase down the chain: look for "currentHolder → next" PBTC transfer of exact `swappedPBTC`
-  while (true) {
-    let nextRecipient = null;
-    for (const lg of receipt.logs) {
-      if (
-        lg.address.toLowerCase() === PBTC_TOKEN_ADDRESS.toLowerCase() &&
-        lg.topics[0] === TRANSFER_TOPIC
-      ) {
-        const { from, to, value } = iface.decodeEventLog("Transfer", lg.data, lg.topics);
-        if (
-          from.toLowerCase() === currentHolder.toLowerCase() &&
-          value === swappedPBTC
-        ) {
-          nextRecipient = to;
-          break;
-        }
-      }
-    }
-
-    if (!nextRecipient) break;
-    if ((await provider.getCode(nextRecipient)) === "0x") {
-      return getAddress(nextRecipient);
-    }
-    currentHolder = nextRecipient;
-  }
-
-  // 4. Last‐ditch fallback:
-  const tx = await provider.getTransaction(txHash);
-  return getAddress(tx.from);
+  // ── Fallbacks ──
+  if (bestAddr)                         return getAddress(bestAddr); // ✅
+  if ((await provider.getCode(tx.from)) === "0x") return getAddress(tx.from);
+  if ((await provider.getCode(ev.args.recipient)) === "0x")
+                                           return getAddress(ev.args.recipient);
+  return getAddress(tx.from);            // last-ditch (contract) fallback
 }
 
 /* ─────────── Broadcast ─────────── */
@@ -263,75 +159,46 @@ async function sendBuy({ buyer, usdt, pbtcAmt, price, txHash }) {
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  console.log(`[BuyBot] ${t.label} | $${fmt(usdt)} | ${short} | Pool: ${poolAddr}`);
+  console.log(`[BuyBot] ${t.label} | $${fmt(usdt)} | ${short}`);
 }
 
 
-/*────────────────────── Poll Swaps ──────────────────────*/
-/**
- * 1. updatePools() → discovers any newly created PBTC pools.  
- * 2. For each pool in poolContracts, query Swap events from lastSwapBlock → currentBlock.  
- * 3. For each BUY (amount0<0 && amount1>0), resolve the buyer, price, and sendBuy().
- */
+/* ─────────── Swap poller ─────────── */
+let lastBlock = START_BLOCK ? Number(START_BLOCK) : 0;
+
 async function pollSwaps() {
   try {
-    const currentBlock = await provider.getBlockNumber();
+    const current = await provider.getBlockNumber();
+    if (lastBlock === 0) lastBlock = current - 1;
 
-    // 1. Discover new pools (chunked)
-    await updatePools();
+    const step = 500;
+    for (let from = lastBlock + 1; from <= current; from += step) {
+      const to = Math.min(from + step - 1, current);
+      const events = await pool.queryFilter("Swap", from, to);
+      lastBlock = to;
 
-    if (lastSwapBlock === 0) lastSwapBlock = currentBlock - 1;
-    const startBlock = lastSwapBlock + 1;
-    const endBlock   = currentBlock;
+      for (const ev of events) {
+        const { amount0, amount1 } = ev.args;
 
-    // chunk through each pool in ≤ 500-block increments
-    const CHUNK_SIZE = 500;
-    for (const [poolAddr, poolContract] of Object.entries(poolContracts)) {
-      for (
-        let from = startBlock;
-        from <= endBlock;
-        from += CHUNK_SIZE
-      ) {
-        const to = Math.min(from + CHUNK_SIZE - 1, endBlock);
-        const events = await poolContract.queryFilter("Swap", from, to);
-
-        for (const ev of events) {
-          const txHash = ev.transactionHash;
-
-          // Skip if we already alerted on this tx
-          if (processedTxs.has(txHash)) continue;
-
-          const { amount0, amount1 } = ev.args;
-          // BUY = PBTC out (amount0<0) & quote in (amount1>0)
-          if (amount0 < 0n && amount1 > 0n) {
-            const usdt    = parseFloat(formatUnits(amount1, USDT_DECIMALS));
-            if (usdt < MIN_USDT) continue;
-
-            const pbtcAmt = parseFloat(formatUnits(-amount0, PBTC_DECIMALS));
-            const price   = usdt / pbtcAmt;
-            const buyer   = await resolveBuyer(ev);
-
-            // Mark this tx as processed so no other pool reposts it
-            processedTxs.add(txHash);
-
-            await sendBuy({
-              buyer,
-              usdt,
-              pbtcAmt,
-              price,
-              txHash,
-              poolAddr,
-            });
-          }
+        // PBTC out (amount0 < 0) & USDT in (amount1 > 0)
+        if (amount0 < 0n && amount1 > 0n) {
+          const usdt    = parseFloat(formatUnits(amount1, USDT_DECIMALS));
+          if (usdt < MIN_USDT) continue;
+        
+          const pbtcAmt = parseFloat(formatUnits(-amount0, PBTC_DECIMALS));
+          const price   = usdt / pbtcAmt;
+        
+          const buyer   = await resolveBuyer(ev);
+        
+          await sendBuy({
+            buyer,
+            usdt,
+            pbtcAmt,
+            price,
+            txHash: ev.transactionHash,
+          });
         }
       }
-    }
-
-    lastSwapBlock = endBlock;
-
-    // Optional: clear old txs if Set grows too large
-    if (processedTxs.size > 10000) {
-      processedTxs.clear();
     }
   } catch (err) {
     console.error("Swap poll error:", err.message);
@@ -340,7 +207,7 @@ async function pollSwaps() {
 setInterval(pollSwaps, 10_000);
 console.log("✅ PBTC buy bot polling swaps…");
 
-/* ─────────── HOLDER COUNTER ─────────── */
+/* ─────────── HOLDER COUNTER (unchanged) ─────────── */
 let known = new Set();
 let lastScan = 29988806;
 
