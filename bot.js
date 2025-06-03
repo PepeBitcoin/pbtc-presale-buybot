@@ -71,6 +71,9 @@ let TOTAL_SUPPLY = 100_000_000; // fallback
   }
 })();
 
+let lastFactoryBlock  = START_BLOCK ? Number(START_BLOCK) : 0;
+let lastSwapBlock     = START_BLOCK ? Number(START_BLOCK) : 0;
+
 /* ─────────── Helper fns ─────────── */
 function tier(usdt) {
   if (usdt < 50)  return { emoji: "🦐", label: "Shrimp", img: "buy.jpg" };
