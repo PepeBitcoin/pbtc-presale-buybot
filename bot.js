@@ -98,30 +98,44 @@ async function isEOA(address) {
  */
 async function updatePools() {
   const currentBlock = await provider.getBlockNumber();
+  const startBlock   = lastFactoryBlock + 1;
+  const endBlock     = currentBlock;
 
-  // Fetch all PoolCreated events from lastFactoryBlock+1 → currentBlock
-  const events = await factory.queryFilter(
-    "PoolCreated",
-    lastFactoryBlock + 1,
-    currentBlock
-  );
+  if (startBlock > endBlock) {
+    lastFactoryBlock = endBlock;
+    return;
+  }
 
-  for (const ev of events) {
-    const { token0, token1, pool: poolAddr } = ev.args;
-    if (
-      token0.toLowerCase() === PBTC_TOKEN_ADDRESS.toLowerCase() ||
-      token1.toLowerCase() === PBTC_TOKEN_ADDRESS.toLowerCase()
-    ) {
-      const normalized = poolAddr.toLowerCase();
-      if (!poolContracts[normalized]) {
-        // Create a new Contract instance for this pool
-        poolContracts[normalized] = new Contract(poolAddr, uniV3PoolAbi, provider);
-        console.log(`[Pools] Added PBTC pool: ${poolAddr}`);
+  // chunk through [startBlock..endBlock] in ≤ 500-block windows
+  const CHUNK_SIZE = 500;
+  for (
+    let from = startBlock;
+    from <= endBlock;
+    from += CHUNK_SIZE
+  ) {
+    const to = Math.min(from + CHUNK_SIZE - 1, endBlock);
+    const events = await factory.queryFilter("PoolCreated", from, to);
+
+    for (const ev of events) {
+      const { token0, token1, pool: poolAddr } = ev.args;
+      if (
+        token0.toLowerCase() === PBTC_TOKEN_ADDRESS.toLowerCase() ||
+        token1.toLowerCase() === PBTC_TOKEN_ADDRESS.toLowerCase()
+      ) {
+        const normalized = poolAddr.toLowerCase();
+        if (!poolContracts[normalized]) {
+          poolContracts[normalized] = new Contract(
+            poolAddr,
+            uniV3PoolAbi,
+            provider
+          );
+          console.log(`[Pools] Added PBTC pool: ${poolAddr}`);
+        }
       }
     }
   }
 
-  lastFactoryBlock = currentBlock;
+  lastFactoryBlock = endBlock;
 }
 
 /*────────────────────── Resolve Buyer Address ──────────────────────*/
@@ -263,43 +277,62 @@ async function pollSwaps() {
   try {
     const currentBlock = await provider.getBlockNumber();
 
-    // 1. Discover new pools
+    // 1. Discover new pools (chunked)
     await updatePools();
 
     if (lastSwapBlock === 0) lastSwapBlock = currentBlock - 1;
-    const fromBlock = lastSwapBlock + 1;
-    const toBlock   = currentBlock;
+    const startBlock = lastSwapBlock + 1;
+    const endBlock   = currentBlock;
 
-    // 2. Iterate each known pool
+    // chunk through each pool in ≤ 500-block increments
+    const CHUNK_SIZE = 500;
     for (const [poolAddr, poolContract] of Object.entries(poolContracts)) {
-      // Fetch Swap events in [fromBlock, toBlock]
-      const events = await poolContract.queryFilter("Swap", fromBlock, toBlock);
+      for (
+        let from = startBlock;
+        from <= endBlock;
+        from += CHUNK_SIZE
+      ) {
+        const to = Math.min(from + CHUNK_SIZE - 1, endBlock);
+        const events = await poolContract.queryFilter("Swap", from, to);
 
-      for (const ev of events) {
-        const { amount0, amount1 } = ev.args;
+        for (const ev of events) {
+          const txHash = ev.transactionHash;
 
-        // BUY = PBTC out (amount0<0) & Quote→PBTC (amount1>0)
-        if (amount0 < 0n && amount1 > 0n) {
-          const usdt    = parseFloat(formatUnits(amount1, USDT_DECIMALS));
-          if (usdt < MIN_USDT) continue;
+          // Skip if we already alerted on this tx
+          if (processedTxs.has(txHash)) continue;
 
-          const pbtcAmt = parseFloat(formatUnits(-amount0, PBTC_DECIMALS));
-          const price   = usdt / pbtcAmt;
-          const buyer   = await resolveBuyer(ev);
+          const { amount0, amount1 } = ev.args;
+          // BUY = PBTC out (amount0<0) & quote in (amount1>0)
+          if (amount0 < 0n && amount1 > 0n) {
+            const usdt    = parseFloat(formatUnits(amount1, USDT_DECIMALS));
+            if (usdt < MIN_USDT) continue;
 
-          await sendBuy({
-            buyer,
-            usdt,
-            pbtcAmt,
-            price,
-            txHash: ev.transactionHash,
-            poolAddr
-          });
+            const pbtcAmt = parseFloat(formatUnits(-amount0, PBTC_DECIMALS));
+            const price   = usdt / pbtcAmt;
+            const buyer   = await resolveBuyer(ev);
+
+            // Mark this tx as processed so no other pool reposts it
+            processedTxs.add(txHash);
+
+            await sendBuy({
+              buyer,
+              usdt,
+              pbtcAmt,
+              price,
+              txHash,
+              poolAddr,
+            });
+          }
         }
       }
     }
 
-    lastSwapBlock = toBlock;
+    lastSwapBlock = endBlock;
+
+    // Optional: clear old txs if Set grows too large
+    if (processedTxs.size > 10000) {
+      processedTxs.clear();
+    }
   } catch (err) {
     console.error("Swap poll error:", err.message);
   }
