@@ -133,7 +133,7 @@ async function sendBuy({ buyer, usdt, pbtcAmt, price, txHash }) {
       },
       {
         text: "💵 Buy",
-        url: "https://app.uniswap.org/swap?chain=base&inputCurrency=0xfde4c96c8593536e31f229ea8f37b2ada2699bb2&outputCurrency=0x31705474c1f2de7f738e34233c49522ca1e3c53c"
+        url: "https://www.pepe-bitcoin.com/#/buy"
       }
     ]
   ];
