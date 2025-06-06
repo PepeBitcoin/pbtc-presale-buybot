@@ -61,10 +61,10 @@ let TOTAL_SUPPLY = 100_000_000; // fallback
 
 /* ─────────── Helper fns ─────────── */
 function tier(usdt) {
-  if (usdt < 50)  return { emoji: "🦐", label: "Shrimp", img: "buy.jpg" };
-  if (usdt < 200) return { emoji: "🐟", label: "Fish",   img: "buy.jpg" };
-  if (usdt < 500) return { emoji: "🐬", label: "Dolphin",img: "buy.jpg" };
-  return             { emoji: "🐋", label: "Whale",  img: "buy.jpg" };
+  if (usdt < 50)  return { emoji: "🦐", label: "Shrimp", img: "BuybotPBTC.gif" };
+  if (usdt < 200) return { emoji: "🐟", label: "Fish",   img: "BuybotPBTC.gif" };
+  if (usdt < 500) return { emoji: "🐬", label: "Dolphin",img: "BuybotPBTC.gif" };
+  return             { emoji: "🐋", label: "Whale",  img: "BuybotPBTC.gif" };
 }
 function fmt(num, dec = 2) {
   return num.toLocaleString(undefined, {
