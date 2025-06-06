@@ -147,9 +147,9 @@ async function sendBuy({ buyer, usdt, pbtcAmt, price, txHash }) {
     `🏷️ *Mcap:* $${fmt(mcap, 0)}\n\n` +
     `🔗 [View on BaseScan](${link})`;
 
-  const pic = path.join(__dirname, "images", t.img);
+  const animationPath = path.join(__dirname, "images", t.img);
   for (const chatId of chatIds) {
-    await bot.sendPhoto(chatId, pic, {
+    await bot.sendAnimation(chatId, animationPath, {
       caption,
       parse_mode: "Markdown",
       reply_markup: {
